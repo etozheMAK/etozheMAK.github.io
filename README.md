@@ -4,3 +4,6 @@
 # PhPweb.html 
 # JavaScriptweb.html
 # Rubyweb.html 
+#	JAVAweb.html
+#	Cweb.html
+#	PYTHONweb.html
