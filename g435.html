@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Заряд G435</title>
 <meta name="description" content="Просмотр уровня заряда беспроводных наушников Logitech G435 прямо в браузере через WebHID.">
+<meta name="theme-color" content="#1b1e24">
+<link rel="manifest" href="g435.webmanifest">
+<link rel="icon" href="images/g435-icon-192.png">
+<link rel="apple-touch-icon" href="images/g435-icon-192.png">
 <style>
   :root {
     --bg: #f4f5f7;
@@ -155,6 +159,7 @@
       <button class="primary" id="connectBtn">Подключить</button>
       <button id="refreshBtn" disabled>Обновить</button>
       <button id="disconnectBtn" disabled>Отключить</button>
+      <button id="installBtn" hidden>Установить как программу</button>
     </div>
   </div>
 
@@ -163,6 +168,7 @@
       <summary>Как это работает и что делать, если не получается</summary>
       <ol>
         <li>Страница общается с приёмником наушников напрямую через WebHID — без установки программ и без G HUB.</li>
+        <li>Страницу можно установить как программу: кнопка «Установить как программу» или значок установки в адресной строке Chrome/Edge. Она откроется в своём окне, а заряд будет виден в заголовке окна и на значке в панели задач. Чтобы она запускалась вместе с Windows, откройте <code>chrome://apps</code> (или <code>edge://apps</code>), нажмите правой кнопкой на «Заряд G435» и включите «Запускать при входе в систему».</li>
         <li>Если G HUB запущен, он может занимать устройство — закройте его, если заряд не читается.</li>
         <li>В Linux нужен доступ к <code>/dev/hidraw*</code>: добавьте udev-правило для вендора <code>046d</code> (например, <code>KERNEL=="hidraw*", ATTRS{idVendor}=="046d", MODE="0666"</code>).</li>
         <li>Если наушники выключены, приёмник ответит ошибкой — включите их и нажмите «Обновить».</li>
@@ -541,6 +547,39 @@
     if (info?.mv) text += ` · ${(info.mv / 1000).toFixed(2)} В`;
     ui.state.textContent = text;
     ui.updated.textContent = new Date().toLocaleTimeString();
+    showInTitle(info);
+  }
+
+  // Window title and taskbar badge, so the level is visible without opening the window.
+  function showInTitle(info) {
+    const pct = info?.percent;
+    document.title = pct == null ? 'Заряд G435' : `${info.approx ? '≈' : ''}${pct}% — G435`;
+    try {
+      if (pct == null) navigator.clearAppBadge?.();
+      else navigator.setAppBadge?.(pct);
+    } catch (_) {}
+  }
+
+  function setupInstall() {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('g435-sw.js', { scope: './g435' })
+        .catch((err) => log('service worker: ' + err.message));
+    }
+    const btn = $('installBtn');
+    let prompt = null;
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      prompt = e;
+      btn.hidden = false;
+    });
+    btn.addEventListener('click', async () => {
+      if (!prompt) return;
+      prompt.prompt();
+      await prompt.userChoice;
+      prompt = null;
+      btn.hidden = true;
+    });
+    window.addEventListener('appinstalled', () => { btn.hidden = true; });
   }
 
   function setMessage(text) {
@@ -709,6 +748,7 @@
       navigator.clipboard.writeText(ui.log.textContent).catch(() => {});
     });
     log(`страница загружена, WebHID: ${'hid' in navigator ? 'есть' : 'нет'}`);
+    setupInstall();
     if (!('hid' in navigator)) {
       $('unsupported').hidden = false;
       ui.connect.disabled = true;
