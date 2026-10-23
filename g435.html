@@ -162,11 +162,11 @@
     <details>
       <summary>Как это работает и что делать, если не получается</summary>
       <ol>
-        <li>Страница общается с наушниками напрямую по протоколу Logitech HID++ через WebHID — без установки программ и без G HUB.</li>
+        <li>Страница общается с приёмником наушников напрямую через WebHID — без установки программ и без G HUB.</li>
         <li>Если G HUB запущен, он может занимать устройство — закройте его, если заряд не читается.</li>
         <li>В Linux нужен доступ к <code>/dev/hidraw*</code>: добавьте udev-правило для вендора <code>046d</code> (например, <code>KERNEL=="hidraw*", ATTRS{idVendor}=="046d", MODE="0666"</code>).</li>
         <li>Если наушники выключены, приёмник ответит ошибкой — включите их и нажмите «Обновить».</li>
-        <li>Заряд обновляется автоматически каждые 30 секунд, пока вкладка открыта.</li>
+        <li>Приёмник G435 (<code>046d:0acb</code>) сообщает только напряжение батареи, поэтому процент примерный, а режим зарядки не виден. Заряд обновляется раз в 5 минут, пока вкладка открыта: при чтении звук может на мгновение прерваться.</li>
       </ol>
     </details>
   </div>
@@ -352,9 +352,173 @@
   const FEATURE_ORDER = [FEATURE.UNIFIED_BATTERY, FEATURE.BATTERY_STATUS, FEATURE.ADC_MEASUREMENT, FEATURE.BATTERY_VOLTAGE];
   const DEVICE_INDEXES = [0xff, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
 
+  // ---------- G435 LIGHTSPEED dongle 046d:0acb ----------
+  // This dongle has no HID++: it bridges "PA" commands of the headset's Airoha SoC
+  // through feature report 6 of vendor collection 0xFFC0. Protocol ported from
+  // github.com/deddroid/logitech-g435-battery (MIT), based on endes' research.
+
+  const PA_REPORT = 0x06;
+  const PA_USAGE_PAGE = 0xffc0;
+  const PA_POLL_MS = 5 * 60 * 1000; // entering the bridge mode can briefly glitch audio
+  const PA_ENTER = [0x01, 0x03];
+  const PA_EXIT = [0x08, 0x03];
+  const PA_SEND = [0x04, 0x03];
+  const PA_ACK_OK = 0x5a;
+  const PA_ACK_ALREADY = 0xfe;
+  const CAT_OTA = 0x06;
+  const CAT_WIRELESS = 0x0e;
+  const REMOTE_GET_MODE = 0xe0;
+  const REMOTE_SET_MODE = 0xe1;
+  const REMOTE_GET_CONNECT_STATUS = 0xe3;
+
+  // Resting Li-Po voltage (mV) → %, same curve as the upstream tool.
+  const G435_CURVE = [
+    [4200, 100], [4150, 95], [4100, 90], [4050, 85], [4000, 80], [3950, 75],
+    [3900, 70], [3850, 62], [3800, 55], [3750, 45], [3700, 35], [3650, 25],
+    [3600, 15], [3550, 10], [3500, 5], [3400, 0],
+  ];
+  function g435Percent(mv) {
+    if (mv >= G435_CURVE[0][0]) return 100;
+    for (let i = 1; i < G435_CURVE.length; i++) {
+      const [v1, p1] = G435_CURVE[i - 1], [v2, p2] = G435_CURVE[i];
+      if (mv >= v2) return Math.round(p2 + (p1 - p2) * (mv - v2) / (v1 - v2));
+    }
+    return 0;
+  }
+
+  // GET_BATTERY reply somewhere in the buffer: 07 00 06 <seq|80> 00 mv_lo mv_hi.
+  function parseBatteryMv(b) {
+    for (let i = 0; i + 7 <= b.length; i++) {
+      if (b[i] === 0x07 && b[i + 1] === 0x00 && b[i + 2] === CAT_OTA && (b[i + 3] & 0x80) && b[i + 4] === 0x00) {
+        const mv = b[i + 5] | (b[i + 6] << 8);
+        // In the wrong remote mode the same reply carries garbage.
+        if (mv >= 2500 && mv <= 4600) return mv;
+      }
+    }
+    return null;
+  }
+
+  // Wireless-category "get" reply: 02 00 <cmd> <value>.
+  function parseRemoteValue(b, cmd) {
+    for (let i = 0; i + 4 <= b.length; i++) {
+      if (b[i] === 0x02 && b[i + 1] === 0x00 && b[i + 2] === cmd) return b[i + 3];
+    }
+    return null;
+  }
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  class G435Bridge {
+    constructor(device) {
+      this.device = device;
+      this.seq = 1;
+      this.waiter = null;
+      this.queue = Promise.resolve();
+      // The bridge ACKs each feature report on the input endpoint (report 6, first byte).
+      this.handler = (e) => {
+        if (e.reportId !== PA_REPORT || !this.waiter) return;
+        const w = this.waiter;
+        this.waiter = null;
+        w(e.data.getUint8(0));
+      };
+      device.addEventListener('inputreport', this.handler);
+    }
+
+    close() { this.device.removeEventListener('inputreport', this.handler); }
+
+    async bridge(op, body = []) {
+      const data = new Uint8Array(63);
+      data.set(op, 0);
+      data.set(body, 2);
+      log(`→ feature 06 ${bytes(data.slice(0, 2 + body.length))}`);
+      let timer;
+      const ack = new Promise((resolve, reject) => {
+        timer = setTimeout(() => { this.waiter = null; reject(new Error('нет ответа от приёмника')); }, 800);
+        this.waiter = (a) => { clearTimeout(timer); resolve(a); };
+      });
+      try {
+        await this.device.sendFeatureReport(PA_REPORT, data);
+      } catch (err) {
+        clearTimeout(timer);
+        this.waiter = null;
+        throw err;
+      }
+      return ack;
+    }
+
+    // Returns the feature report with the report ID as byte 0, like hidapi does.
+    async getFeature() {
+      const dv = await this.device.receiveFeatureReport(PA_REPORT);
+      const b = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
+      if (b.length === 64 && b[0] === PA_REPORT) return b;
+      const out = new Uint8Array(b.length + 1);
+      out[0] = PA_REPORT;
+      out.set(b, 1);
+      return out;
+    }
+
+    async drain() {
+      for (let i = 0; i < 16; i++) {
+        const b = await this.getFeature();
+        if (b.length < 2 || b[1] === 0xff) break;
+      }
+    }
+
+    // Sends a "PA" command and polls feature reports until `parse` matches.
+    async query(category, len, payload, parse) {
+      const cmd = [0x50, 0x41, category, this.seq, len, ...payload];
+      this.seq = (this.seq % 127) + 1;
+      await this.bridge(PA_SEND, [cmd.length, ...cmd]);
+      const deadline = Date.now() + 1500;
+      while (Date.now() < deadline) {
+        const b = await this.getFeature();
+        if (b[1] !== 0xff) {
+          log(`← ${bytes(b.slice(0, 24))}`);
+          const v = parse(b);
+          if (v != null) return v;
+          continue;
+        }
+        await sleep(30);
+      }
+      return null;
+    }
+
+    async session() {
+      const ack = await this.bridge(PA_ENTER);
+      if (ack !== PA_ACK_OK && ack !== PA_ACK_ALREADY) log(`неожиданный ACK ${hex(ack)}`);
+      try {
+        await this.drain();
+        const connected = await this.query(CAT_WIRELESS, 1, [REMOTE_GET_CONNECT_STATUS],
+          (b) => parseRemoteValue(b, REMOTE_GET_CONNECT_STATUS));
+        if (connected === 0) return { off: true };
+        // Remote mode 1 routes OTA commands to the headset; in mode 0 the dongle
+        // answers GET_BATTERY itself with a meaningless value.
+        const mode = await this.query(CAT_WIRELESS, 1, [REMOTE_GET_MODE],
+          (b) => parseRemoteValue(b, REMOTE_GET_MODE));
+        if (mode !== 1) {
+          log(`режим ${mode}, переключаю на 1`);
+          await this.query(CAT_WIRELESS, 2, [REMOTE_SET_MODE, 0x01], () => true);
+        }
+        const mv = await this.query(CAT_OTA, 1, [0x00, 0x31], parseBatteryMv);
+        if (mv == null) throw new Error('наушники не прислали напряжение');
+        return { percent: g435Percent(mv), status: 'voltage', mv, approx: true };
+      } finally {
+        // Always leave the bridge mode, even on error.
+        await this.bridge(PA_EXIT).catch((err) => log('выход из режима моста: ' + err.message));
+      }
+    }
+
+    read() {
+      const p = this.queue.then(() => this.session());
+      this.queue = p.catch(() => {});
+      return p;
+    }
+  }
+
   // ---------- App state ----------
 
   let hidpp = null;
+  let bridge = null;
   let target = null; // { devIdx, featIdx, featureId }
   let pollTimer = null;
 
@@ -369,7 +533,10 @@
       ui.fill.style.backgroundColor = p <= 15 ? 'var(--bad)' : p <= 35 ? 'var(--warn)' : 'var(--ok)';
       ui.percent.textContent = (info.approx ? '≈' : '') + p + '%';
     }
-    const labels = { charging: 'Заряжается ⚡', full: 'Полностью заряжено', discharging: 'Работает от батареи', error: 'Ошибка батареи' };
+    const labels = {
+      charging: 'Заряжается ⚡', full: 'Полностью заряжено', discharging: 'Работает от батареи',
+      error: 'Ошибка батареи', voltage: 'Оценка по напряжению',
+    };
     let text = info ? (labels[info.status] || '') : '';
     if (info?.mv) text += ` · ${(info.mv / 1000).toFixed(2)} В`;
     ui.state.textContent = text;
@@ -406,7 +573,19 @@
     return null;
   }
 
+  async function readBridge() {
+    try {
+      const info = await bridge.read();
+      if (info.off) setMessage('Наушники выключены или вне зоны приёмника');
+      else render(info);
+    } catch (err) {
+      log('ошибка чтения: ' + err.message);
+      setMessage('Не удалось прочитать заряд: ' + err.message);
+    }
+  }
+
   async function readBattery() {
+    if (bridge) return readBridge();
     if (!hidpp) return;
     try {
       if (!target) {
@@ -438,28 +617,35 @@
     render(DECODERS[target.featureId].decode(d.slice(3)));
   }
 
-  async function attach(device) {
+  async function attach({ dev: device, kind }) {
     await detach();
     if (!device.opened) await device.open();
-    hidpp = new Hidpp(device);
-    hidpp.onEvent = onEvent;
     target = null;
+    if (kind === 'bridge') {
+      bridge = new G435Bridge(device);
+      ui.source.textContent = 'Мост приёмника G435 (отчёт 0x06), напряжение';
+    } else {
+      hidpp = new Hidpp(device);
+      hidpp.onEvent = onEvent;
+    }
     ui.devName.textContent = `${device.productName || 'Logitech'} (${hex(device.productId, 4)})`;
-    log(`открыто: ${device.productName} pid=${hex(device.productId, 4)} long=${hidpp.useLong}`);
+    log(`открыто: ${device.productName} pid=${hex(device.productId, 4)} протокол=${kind}`);
     setConnected(true);
     ui.state.textContent = 'Читаю заряд…';
     await readBattery();
-    pollTimer = setInterval(readBattery, POLL_MS);
+    pollTimer = setInterval(readBattery, kind === 'bridge' ? PA_POLL_MS : POLL_MS);
   }
 
   async function detach() {
     clearInterval(pollTimer);
     pollTimer = null;
-    if (hidpp) {
-      hidpp.close();
-      try { await hidpp.device.close(); } catch (_) {}
+    const active = hidpp || bridge;
+    if (active) {
+      active.close();
+      try { await active.device.close(); } catch (_) {}
     }
     hidpp = null;
+    bridge = null;
     target = null;
     setConnected(false);
     ui.devName.textContent = '—';
@@ -467,10 +653,15 @@
     setMessage('Не подключено');
   }
 
-  // A receiver exposes several HID interfaces; HID++ lives on the one with report 0x10/0x11.
-  function pickHidppInterface(devices) {
+  // A receiver exposes several HID interfaces. The G435 dongle bridge lives on
+  // collection 0xFFC0 with feature report 6; HID++ on the one with report 0x10/0x11.
+  function pickInterface(devices) {
     const has = (d, id) => d.collections.some((c) => c.outputReports.some((r) => r.reportId === id));
-    return devices.find((d) => has(d, REPORT_LONG)) || devices.find((d) => has(d, REPORT_SHORT));
+    const bridgeDev = devices.find((d) => d.collections.some((c) =>
+      c.usagePage === PA_USAGE_PAGE && c.featureReports.some((r) => r.reportId === PA_REPORT)));
+    if (bridgeDev) return { dev: bridgeDev, kind: 'bridge' };
+    const dev = devices.find((d) => has(d, REPORT_LONG)) || devices.find((d) => has(d, REPORT_SHORT));
+    return dev ? { dev, kind: 'hidpp' } : null;
   }
 
   function describe(d) {
@@ -482,18 +673,18 @@
       (cols.join('\n') || '  (нет доступных коллекций)');
   }
 
-  // Attach to an already permitted Logitech interface that speaks HID++.
+  // Attach to an already permitted Logitech interface we know how to talk to.
   async function useGranted() {
     const granted = (await navigator.hid.getDevices()).filter((d) => d.vendorId === LOGITECH_VID);
     log(`разрешённых интерфейсов Logitech: ${granted.length}`);
     granted.forEach((d) => log(describe(d)));
     if (!granted.length) return false;
-    const dev = pickHidppInterface(granted);
-    if (!dev) {
-      setMessage('Браузер не дал доступ к интерфейсу HID++ (отчёты 0x10/0x11). Пришлите журнал.');
+    const picked = pickInterface(granted);
+    if (!picked) {
+      setMessage('Не найден поддерживаемый интерфейс устройства. Пришлите журнал.');
       return true;
     }
-    await attach(dev);
+    await attach(picked);
     return true;
   }
 
@@ -527,12 +718,13 @@
     ui.refresh.addEventListener('click', () => { target = null; readBattery(); });
     ui.disconnect.addEventListener('click', detach);
     navigator.hid.addEventListener('disconnect', (e) => {
-      if (hidpp && e.device === hidpp.device) { log('устройство отключено'); detach(); }
+      const active = hidpp || bridge;
+      if (active && e.device === active.device) { log('устройство отключено'); detach(); }
     });
     navigator.hid.addEventListener('connect', async (e) => {
-      if (!hidpp && e.device.vendorId === LOGITECH_VID) {
-        const dev = pickHidppInterface([e.device]);
-        if (dev) attach(dev).catch((err) => log(err.message));
+      if (!hidpp && !bridge && e.device.vendorId === LOGITECH_VID) {
+        const picked = pickInterface([e.device]);
+        if (picked) attach(picked).catch((err) => log(err.message));
       }
     });
     // Reconnect automatically to a previously permitted device.
