@@ -1,0 +1,17 @@
+{
+  "id": "g435.html",
+  "name": "Заряд G435",
+  "short_name": "G435",
+  "description": "Уровень заряда беспроводных наушников Logitech G435.",
+  "lang": "ru",
+  "start_url": "g435.html",
+  "scope": "g435",
+  "display": "standalone",
+  "background_color": "#111317",
+  "theme_color": "#1b1e24",
+  "icons": [
+    { "src": "images/g435-icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "images/g435-icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "images/g435-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
