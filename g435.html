@@ -175,6 +175,7 @@
     <details>
       <summary>Журнал (для диагностики)</summary>
       <pre id="log"></pre>
+      <button id="copyLogBtn">Скопировать журнал</button>
     </details>
   </div>
 </main>
@@ -472,19 +473,40 @@
     return devices.find((d) => has(d, REPORT_LONG)) || devices.find((d) => has(d, REPORT_SHORT));
   }
 
+  function describe(d) {
+    const cols = d.collections.map((c) => {
+      const ids = (rs) => rs.map((r) => hex(r.reportId)).join(',') || '-';
+      return `  usagePage=${hex(c.usagePage, 4)} usage=${hex(c.usage, 4)} in=[${ids(c.inputReports)}] out=[${ids(c.outputReports)}] feat=[${ids(c.featureReports)}]`;
+    });
+    return `${d.productName} vid=${hex(d.vendorId, 4)} pid=${hex(d.productId, 4)} opened=${d.opened}\n` +
+      (cols.join('\n') || '  (нет доступных коллекций)');
+  }
+
+  // Attach to an already permitted Logitech interface that speaks HID++.
+  async function useGranted() {
+    const granted = (await navigator.hid.getDevices()).filter((d) => d.vendorId === LOGITECH_VID);
+    log(`разрешённых интерфейсов Logitech: ${granted.length}`);
+    granted.forEach((d) => log(describe(d)));
+    if (!granted.length) return false;
+    const dev = pickHidppInterface(granted);
+    if (!dev) {
+      setMessage('Браузер не дал доступ к интерфейсу HID++ (отчёты 0x10/0x11). Пришлите журнал.');
+      return true;
+    }
+    await attach(dev);
+    return true;
+  }
+
   async function connect() {
+    log('запрос устройства…');
     try {
+      // If the device is already permitted the chooser shows "connected" and the
+      // button stays disabled; Cancel returns [], so fall back to granted devices.
       const devices = await navigator.hid.requestDevice({ filters: [{ vendorId: LOGITECH_VID }] });
-      if (!devices.length) return;
-      // The chooser returns one interface; pull in its siblings that were granted too.
-      const all = (await navigator.hid.getDevices()).filter((d) =>
-        d.vendorId === devices[0].vendorId && d.productId === devices[0].productId);
-      const dev = pickHidppInterface(all.length ? all : devices);
-      if (!dev) {
-        setMessage('У устройства нет интерфейса HID++. Выберите приёмник G435.');
-        return;
+      log(`браузер вернул интерфейсов: ${devices.length}`);
+      if (!(await useGranted())) {
+        setMessage('Устройство не выбрано. Выделите G435 в списке и нажмите «Подключиться».');
       }
-      await attach(dev);
     } catch (err) {
       log('ошибка подключения: ' + err.message);
       setMessage('Не удалось открыть устройство: ' + err.message);
@@ -492,6 +514,10 @@
   }
 
   async function init() {
+    $('copyLogBtn').addEventListener('click', () => {
+      navigator.clipboard.writeText(ui.log.textContent).catch(() => {});
+    });
+    log(`страница загружена, WebHID: ${'hid' in navigator ? 'есть' : 'нет'}`);
     if (!('hid' in navigator)) {
       $('unsupported').hidden = false;
       ui.connect.disabled = true;
@@ -510,8 +536,7 @@
       }
     });
     // Reconnect automatically to a previously permitted device.
-    const dev = pickHidppInterface(await navigator.hid.getDevices());
-    if (dev) attach(dev).catch((err) => log(err.message));
+    useGranted().catch((err) => log('ошибка подключения: ' + err.message));
   }
 
   init();
