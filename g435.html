@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Заряд G435</title>
+<meta name="description" content="Просмотр уровня заряда беспроводных наушников Logitech G435 прямо в браузере через WebHID.">
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --text: #1b1d22;
+    --muted: #6b7080;
+    --border: #e1e3e8;
+    --accent: #2f6fed;
+    --ok: #1f9d55;
+    --warn: #d9911a;
+    --bad: #d6403a;
+    --log-bg: #f0f1f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #111317;
+      --card: #1b1e24;
+      --text: #e8eaef;
+      --muted: #9aa0ad;
+      --border: #2c3039;
+      --accent: #5b8cff;
+      --ok: #3fc27a;
+      --warn: #f0ad3c;
+      --bad: #ff6a63;
+      --log-bg: #15171c;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #111317;
+    --card: #1b1e24;
+    --text: #e8eaef;
+    --muted: #9aa0ad;
+    --border: #2c3039;
+    --accent: #5b8cff;
+    --ok: #3fc27a;
+    --warn: #f0ad3c;
+    --bad: #ff6a63;
+    --log-bg: #15171c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 560px; margin: 0 auto; padding: 32px 16px 48px; }
+  h1 { font-size: 1.5rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 24px; font-size: .95rem; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 24px;
+    margin-bottom: 16px;
+  }
+  .battery-wrap { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
+  .battery {
+    position: relative;
+    width: 150px; height: 70px;
+    border: 4px solid var(--text);
+    border-radius: 12px;
+    padding: 5px;
+    flex: none;
+  }
+  .battery::after {
+    content: "";
+    position: absolute;
+    right: -14px; top: 50%;
+    width: 8px; height: 26px;
+    transform: translateY(-50%);
+    background: var(--text);
+    border-radius: 0 4px 4px 0;
+  }
+  .fill {
+    height: 100%; width: 0%;
+    border-radius: 6px;
+    background: var(--muted);
+    transition: width .6s ease, background-color .3s;
+  }
+  .battery.charging .fill {
+    background-image: linear-gradient(90deg, transparent 0, rgba(255,255,255,.35) 50%, transparent 100%);
+    background-size: 60px 100%;
+    background-repeat: no-repeat;
+    animation: shine 1.6s linear infinite;
+  }
+  @keyframes shine { from { background-position: -60px 0; } to { background-position: 160px 0; } }
+  @media (prefers-reduced-motion: reduce) { .battery.charging .fill { animation: none; } }
+  .percent { font-size: 3rem; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+  .state { color: var(--muted); margin-top: 6px; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 20px 0 0; font-size: .9rem; }
+  dt { color: var(--muted); }
+  dd { margin: 0; overflow-wrap: anywhere; }
+  .buttons { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 20px; }
+  button {
+    font: inherit;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--text);
+    padding: 10px 16px;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  .notice { border-left: 4px solid var(--warn); }
+  .notice p { margin: 0 0 8px; }
+  .notice p:last-child { margin: 0; }
+  details summary { cursor: pointer; color: var(--muted); }
+  pre {
+    background: var(--log-bg);
+    border-radius: 8px;
+    padding: 12px;
+    font-size: .78rem;
+    max-height: 260px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  ol { padding-left: 20px; margin: 8px 0 0; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Logitech G435 — заряд</h1>
+  <p class="sub">Подключите USB-приёмник LIGHTSPEED (или наушники по Bluetooth) и нажмите «Подключить».</p>
+
+  <div class="card notice" id="unsupported" hidden>
+    <p><strong>Браузер не поддерживает WebHID.</strong></p>
+    <p>Откройте страницу в Chrome, Edge или Opera на компьютере (Windows, macOS, Linux, ChromeOS). Firefox и Safari WebHID не поддерживают.</p>
+  </div>
+
+  <div class="card">
+    <div class="battery-wrap">
+      <div class="battery" id="battery"><div class="fill" id="fill"></div></div>
+      <div>
+        <div class="percent" id="percent">—</div>
+        <div class="state" id="state">Не подключено</div>
+      </div>
+    </div>
+    <dl>
+      <dt>Устройство</dt><dd id="devName">—</dd>
+      <dt>Источник данных</dt><dd id="source">—</dd>
+      <dt>Обновлено</dt><dd id="updated">—</dd>
+    </dl>
+    <div class="buttons">
+      <button class="primary" id="connectBtn">Подключить</button>
+      <button id="refreshBtn" disabled>Обновить</button>
+      <button id="disconnectBtn" disabled>Отключить</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <details>
+      <summary>Как это работает и что делать, если не получается</summary>
+      <ol>
+        <li>Страница общается с наушниками напрямую по протоколу Logitech HID++ через WebHID — без установки программ и без G HUB.</li>
+        <li>Если G HUB запущен, он может занимать устройство — закройте его, если заряд не читается.</li>
+        <li>В Linux нужен доступ к <code>/dev/hidraw*</code>: добавьте udev-правило для вендора <code>046d</code> (например, <code>KERNEL=="hidraw*", ATTRS{idVendor}=="046d", MODE="0666"</code>).</li>
+        <li>Если наушники выключены, приёмник ответит ошибкой — включите их и нажмите «Обновить».</li>
+        <li>Заряд обновляется автоматически каждые 30 секунд, пока вкладка открыта.</li>
+      </ol>
+    </details>
+  </div>
+
+  <div class="card">
+    <details>
+      <summary>Журнал (для диагностики)</summary>
+      <pre id="log"></pre>
+    </details>
+  </div>
+</main>
+
+<script>
+(() => {
+  'use strict';
+
+  const LOGITECH_VID = 0x046d;
+  const REPORT_SHORT = 0x10;
+  const REPORT_LONG = 0x11;
+  const SW_ID = 0x0a;
+  const POLL_MS = 30000;
+  const TIMEOUT_MS = 1500;
+
+  const FEATURE = {
+    ROOT: 0x0000,
+    BATTERY_STATUS: 0x1000,
+    BATTERY_VOLTAGE: 0x1001,
+    UNIFIED_BATTERY: 0x1004,
+    ADC_MEASUREMENT: 0x1f20,
+  };
+
+  const $ = (id) => document.getElementById(id);
+  const ui = {
+    battery: $('battery'), fill: $('fill'), percent: $('percent'), state: $('state'),
+    devName: $('devName'), source: $('source'), updated: $('updated'),
+    connect: $('connectBtn'), refresh: $('refreshBtn'), disconnect: $('disconnectBtn'),
+    log: $('log'),
+  };
+
+  const hex = (n, w = 2) => n.toString(16).padStart(w, '0');
+  const bytes = (arr) => Array.from(arr, (b) => hex(b)).join(' ');
+
+  function log(msg) {
+    const t = new Date().toLocaleTimeString();
+    ui.log.textContent += `[${t}] ${msg}\n`;
+    ui.log.scrollTop = ui.log.scrollHeight;
+  }
+
+  // ---------- HID++ transport ----------
+
+  class HidppError extends Error {
+    constructor(code, msg) { super(msg); this.code = code; }
+  }
+
+  const HIDPP20_ERRORS = {
+    1: 'Unknown', 2: 'InvalidArgument', 3: 'OutOfRange', 4: 'HWError',
+    5: 'LogitechInternal', 6: 'InvalidFeatureIndex', 7: 'InvalidFunctionID', 8: 'Busy', 9: 'Unsupported',
+  };
+  const HIDPP10_ERRORS = {
+    1: 'InvalidSubId', 2: 'InvalidAddress', 3: 'InvalidValue', 4: 'ConnectFail', 5: 'TooManyDevices',
+    6: 'AlreadyExists', 7: 'Busy', 8: 'UnknownDevice', 9: 'ResourceError', 10: 'RequestUnavailable',
+    11: 'InvalidParamValue', 12: 'WrongPinCode',
+  };
+
+  class Hidpp {
+    constructor(device) {
+      this.device = device;
+      this.pending = null;
+      this.queue = Promise.resolve();
+      this.onEvent = null;
+      this.useLong = device.collections.some((c) =>
+        c.outputReports.some((r) => r.reportId === REPORT_LONG));
+      this.handler = (e) => this.handle(e);
+      device.addEventListener('inputreport', this.handler);
+    }
+
+    close() { this.device.removeEventListener('inputreport', this.handler); }
+
+    handle(e) {
+      if (e.reportId !== REPORT_SHORT && e.reportId !== REPORT_LONG) return;
+      const d = new Uint8Array(e.data.buffer, e.data.byteOffset, e.data.byteLength);
+      const p = this.pending;
+      if (p && d[0] === p.devIdx) {
+        // HID++ 1.0 error: [dev, 0x8f, subId, addr, code]
+        if (d[1] === 0x8f && d[2] === p.featIdx) {
+          return p.reject(new HidppError(d[4], 'HID++1.0 ' + (HIDPP10_ERRORS[d[4]] || d[4])));
+        }
+        // HID++ 2.0 error: [dev, 0xff, featIdx, func|sw, code]
+        if (d[1] === 0xff && d[2] === p.featIdx && d[3] === p.funcSw) {
+          return p.reject(new HidppError(d[4], 'HID++2.0 ' + (HIDPP20_ERRORS[d[4]] || d[4])));
+        }
+        if (d[1] === p.featIdx && d[2] === p.funcSw) {
+          return p.resolve(d.slice(3));
+        }
+      }
+      // Unsolicited notification (software id 0).
+      if ((d[2] & 0x0f) === 0 && this.onEvent) this.onEvent(d);
+    }
+
+    request(devIdx, featIdx, func, params = []) {
+      const run = () => new Promise((resolve, reject) => {
+        const funcSw = ((func & 0x0f) << 4) | SW_ID;
+        const len = this.useLong ? 19 : 6;
+        const data = new Uint8Array(len);
+        data[0] = devIdx; data[1] = featIdx; data[2] = funcSw;
+        data.set(params.slice(0, len - 3), 3);
+        const timer = setTimeout(() => done(reject, new HidppError(-1, 'timeout')), TIMEOUT_MS);
+        const done = (fn, v) => { clearTimeout(timer); this.pending = null; fn(v); };
+        this.pending = {
+          devIdx, featIdx, funcSw,
+          resolve: (v) => done(resolve, v),
+          reject: (v) => done(reject, v),
+        };
+        const reportId = this.useLong ? REPORT_LONG : REPORT_SHORT;
+        log(`→ ${hex(reportId)} ${bytes(data)}`);
+        this.device.sendReport(reportId, data).catch((err) => done(reject, err));
+      });
+      const p = this.queue.then(run, run);
+      this.queue = p.catch(() => {});
+      return p;
+    }
+
+    async featureIndex(devIdx, featureId) {
+      const r = await this.request(devIdx, 0x00, 0, [featureId >> 8, featureId & 0xff]);
+      return r[0] || 0;
+    }
+  }
+
+  // ---------- Battery decoding ----------
+
+  // Rough Li-ion discharge curve (mV → %), used when the headset reports only voltage.
+  const VOLT_CURVE = [
+    [4180, 100], [4100, 90], [4000, 80], [3900, 65], [3800, 50],
+    [3750, 40], [3700, 28], [3650, 17], [3600, 9], [3500, 3], [3300, 0],
+  ];
+  function voltToPercent(mv) {
+    if (mv >= VOLT_CURVE[0][0]) return 100;
+    for (let i = 1; i < VOLT_CURVE.length; i++) {
+      const [v1, p1] = VOLT_CURVE[i - 1], [v2, p2] = VOLT_CURVE[i];
+      if (mv >= v2) return Math.round(p2 + (p1 - p2) * (mv - v2) / (v1 - v2));
+    }
+    return 0;
+  }
+
+  const DECODERS = {
+    [FEATURE.UNIFIED_BATTERY]: {
+      name: 'Unified Battery (0x1004)', func: 1,
+      decode(r) {
+        const st = { 0: 'discharging', 1: 'charging', 2: 'charging', 3: 'full', 4: 'error' }[r[2]] || 'discharging';
+        let pct = r[0];
+        if (!pct) pct = r[1] & 8 ? 100 : r[1] & 4 ? 50 : r[1] & 2 ? 20 : r[1] & 1 ? 5 : null;
+        return { percent: pct, status: st, approx: !r[0] };
+      },
+    },
+    [FEATURE.BATTERY_STATUS]: {
+      name: 'Battery Status (0x1000)', func: 0,
+      decode(r) {
+        const st = { 0: 'discharging', 1: 'charging', 2: 'charging', 3: 'full', 4: 'charging', 5: 'error', 6: 'error' }[r[2]] || 'discharging';
+        return { percent: r[0] || (st === 'full' ? 100 : null), status: st };
+      },
+    },
+    [FEATURE.ADC_MEASUREMENT]: {
+      name: 'ADC Measurement (0x1F20)', func: 0,
+      decode(r) {
+        const mv = (r[0] << 8) | r[1];
+        const flags = r[2];
+        const st = flags & 0x02 ? 'charging' : 'discharging';
+        return { percent: mv ? voltToPercent(mv) : null, status: st, mv, approx: true, off: !mv };
+      },
+    },
+    [FEATURE.BATTERY_VOLTAGE]: {
+      name: 'Battery Voltage (0x1001)', func: 0,
+      decode(r) {
+        const mv = (r[0] << 8) | r[1];
+        const flags = r[2];
+        let st = 'discharging';
+        if (flags & 0x80) st = (flags & 0x07) === 2 || (flags & 0x07) === 1 ? 'full' : 'charging';
+        return { percent: voltToPercent(mv), status: st, mv, approx: true };
+      },
+    },
+  };
+  const FEATURE_ORDER = [FEATURE.UNIFIED_BATTERY, FEATURE.BATTERY_STATUS, FEATURE.ADC_MEASUREMENT, FEATURE.BATTERY_VOLTAGE];
+  const DEVICE_INDEXES = [0xff, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
+
+  // ---------- App state ----------
+
+  let hidpp = null;
+  let target = null; // { devIdx, featIdx, featureId }
+  let pollTimer = null;
+
+  function render(info) {
+    ui.battery.classList.toggle('charging', info?.status === 'charging');
+    if (!info || info.percent == null) {
+      ui.fill.style.width = '0%';
+      ui.percent.textContent = '—';
+    } else {
+      const p = Math.max(0, Math.min(100, info.percent));
+      ui.fill.style.width = p + '%';
+      ui.fill.style.backgroundColor = p <= 15 ? 'var(--bad)' : p <= 35 ? 'var(--warn)' : 'var(--ok)';
+      ui.percent.textContent = (info.approx ? '≈' : '') + p + '%';
+    }
+    const labels = { charging: 'Заряжается ⚡', full: 'Полностью заряжено', discharging: 'Работает от батареи', error: 'Ошибка батареи' };
+    let text = info ? (labels[info.status] || '') : '';
+    if (info?.mv) text += ` · ${(info.mv / 1000).toFixed(2)} В`;
+    ui.state.textContent = text;
+    ui.updated.textContent = new Date().toLocaleTimeString();
+  }
+
+  function setMessage(text) {
+    render(null);
+    ui.state.textContent = text;
+  }
+
+  function setConnected(on) {
+    ui.refresh.disabled = !on;
+    ui.disconnect.disabled = !on;
+    ui.connect.disabled = on;
+  }
+
+  async function discover() {
+    for (const devIdx of DEVICE_INDEXES) {
+      for (const featureId of FEATURE_ORDER) {
+        try {
+          const featIdx = await hidpp.featureIndex(devIdx, featureId);
+          if (featIdx) {
+            log(`найдено: устройство ${hex(devIdx)}, ${DECODERS[featureId].name}, индекс ${featIdx}`);
+            return { devIdx, featIdx, featureId };
+          }
+        } catch (err) {
+          log(`устройство ${hex(devIdx)}: ${err.message}`);
+          // Device index absent or headset off: skip remaining features for this index.
+          break;
+        }
+      }
+    }
+    return null;
+  }
+
+  async function readBattery() {
+    if (!hidpp) return;
+    try {
+      if (!target) {
+        target = await discover();
+        if (!target) {
+          setMessage('Наушники не отвечают. Включите их и нажмите «Обновить».');
+          ui.source.textContent = '—';
+          return;
+        }
+        ui.source.textContent = DECODERS[target.featureId].name;
+      }
+      const dec = DECODERS[target.featureId];
+      const r = await hidpp.request(target.devIdx, target.featIdx, dec.func);
+      log(`← ${bytes(r.slice(0, 6))}`);
+      const info = dec.decode(r);
+      if (info.off) setMessage('Наушники выключены или вне зоны приёмника');
+      else render(info);
+    } catch (err) {
+      log('ошибка чтения: ' + err.message);
+      // Headset may have been switched off / reconnected — rediscover next time.
+      target = null;
+      setMessage('Наушники выключены или вне зоны приёмника');
+    }
+  }
+
+  function onEvent(d) {
+    if (!target || d[0] !== target.devIdx || d[1] !== target.featIdx) return;
+    log(`событие: ${bytes(d.slice(0, 7))}`);
+    render(DECODERS[target.featureId].decode(d.slice(3)));
+  }
+
+  async function attach(device) {
+    await detach();
+    if (!device.opened) await device.open();
+    hidpp = new Hidpp(device);
+    hidpp.onEvent = onEvent;
+    target = null;
+    ui.devName.textContent = `${device.productName || 'Logitech'} (${hex(device.productId, 4)})`;
+    log(`открыто: ${device.productName} pid=${hex(device.productId, 4)} long=${hidpp.useLong}`);
+    setConnected(true);
+    ui.state.textContent = 'Читаю заряд…';
+    await readBattery();
+    pollTimer = setInterval(readBattery, POLL_MS);
+  }
+
+  async function detach() {
+    clearInterval(pollTimer);
+    pollTimer = null;
+    if (hidpp) {
+      hidpp.close();
+      try { await hidpp.device.close(); } catch (_) {}
+    }
+    hidpp = null;
+    target = null;
+    setConnected(false);
+    ui.devName.textContent = '—';
+    ui.source.textContent = '—';
+    setMessage('Не подключено');
+  }
+
+  // A receiver exposes several HID interfaces; HID++ lives on the one with report 0x10/0x11.
+  function pickHidppInterface(devices) {
+    const has = (d, id) => d.collections.some((c) => c.outputReports.some((r) => r.reportId === id));
+    return devices.find((d) => has(d, REPORT_LONG)) || devices.find((d) => has(d, REPORT_SHORT));
+  }
+
+  async function connect() {
+    try {
+      const devices = await navigator.hid.requestDevice({ filters: [{ vendorId: LOGITECH_VID }] });
+      if (!devices.length) return;
+      // The chooser returns one interface; pull in its siblings that were granted too.
+      const all = (await navigator.hid.getDevices()).filter((d) =>
+        d.vendorId === devices[0].vendorId && d.productId === devices[0].productId);
+      const dev = pickHidppInterface(all.length ? all : devices);
+      if (!dev) {
+        setMessage('У устройства нет интерфейса HID++. Выберите приёмник G435.');
+        return;
+      }
+      await attach(dev);
+    } catch (err) {
+      log('ошибка подключения: ' + err.message);
+      setMessage('Не удалось открыть устройство: ' + err.message);
+    }
+  }
+
+  async function init() {
+    if (!('hid' in navigator)) {
+      $('unsupported').hidden = false;
+      ui.connect.disabled = true;
+      return;
+    }
+    ui.connect.addEventListener('click', connect);
+    ui.refresh.addEventListener('click', () => { target = null; readBattery(); });
+    ui.disconnect.addEventListener('click', detach);
+    navigator.hid.addEventListener('disconnect', (e) => {
+      if (hidpp && e.device === hidpp.device) { log('устройство отключено'); detach(); }
+    });
+    navigator.hid.addEventListener('connect', async (e) => {
+      if (!hidpp && e.device.vendorId === LOGITECH_VID) {
+        const dev = pickHidppInterface([e.device]);
+        if (dev) attach(dev).catch((err) => log(err.message));
+      }
+    });
+    // Reconnect automatically to a previously permitted device.
+    const dev = pickHidppInterface(await navigator.hid.getDevices());
+    if (dev) attach(dev).catch((err) => log(err.message));
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>

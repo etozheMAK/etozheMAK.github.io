@@ -7,3 +7,4 @@
 #	JAVAweb.html
 #	Cweb.html
 #	PYTHONweb.html
+# g435.html — просмотр заряда наушников Logitech G435 (WebHID)
